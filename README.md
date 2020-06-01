@@ -4,8 +4,9 @@ Based on the paper, "Detecting Pulse from Head Motions in Video" by Balakrishnan
 
 This code assumes the input video framerate is 30 FPS.
 
+Demo:
+https://www.youtube.com/watch?v=K__mn9tOIaw
 [![Demo](https://img.youtube.com/vi/K__mn9tOIaw/0.jpg)](https://www.youtube.com/watch?v=K__mn9tOIaw)
-
 
 ## How to Run
 `python3 main.py <path to input video file>`
