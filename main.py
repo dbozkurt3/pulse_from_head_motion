@@ -11,7 +11,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.signal as signal
 import scipy.stats
-from scipy.fftpack import fft, fftfreq
 from scipy.interpolate import interp1d
 from sklearn.decomposition import PCA
 
@@ -180,57 +179,36 @@ def signal_selection(s):
     with maximal power and its first harmonic.
     """
     fs = 250
+    percentages = np.zeros(5)
 
-    max_percentages = []
-    max_freqs = []
-
-    # Only the first 5 source signals are analyzed per the paper
+    # Only the first 5 signals are analyzed per the paper
     for i in range(5):
         s_i = s[:, i]
-        N = len(s_i)
-        T = 1.0 / fs
-
+        
         # Compute the power spectrum of the source signal
-        spectrum = np.abs(fft(s_i))
-        spectrum *= spectrum
-        freqs = fftfreq(N, T)
+        f, Pxx_spec = signal.periodogram(s_i, fs, 'flattop', scaling='spectrum')
+        total_power = np.sum(Pxx_spec)
 
         # Get frequency with max power and its first harmonic
-        maxInd = np.argmax(spectrum)
-        maxPower = spectrum[maxInd]
-        maxFreq = np.abs(freqs[maxInd])
-        firstHarmonic = 2*maxFreq
-        firstHarmonicInd = np.where(freqs == firstHarmonic)
-        firstHarmonicPower = spectrum[firstHarmonicInd]
+        [minPower, maxPower, minLoc, maxLoc] = cv2.minMaxLoc(Pxx_spec)
+        freqMaxPower = f[maxLoc[1]]
+        firstHarmonic = 2 * freqMaxPower
+        firstHarmonicLoc = np.where(f == firstHarmonic)
+        firstHarmonicPower = Pxx_spec[firstHarmonicLoc]
 
         # Calculate percentage of total power the max frequency accounts for
-        total_power = np.sum(spectrum)
-        percentage = (maxPower + firstHarmonicPower) / total_power
-
-        # Plot signal along with its DFT
-        plt.figure()
-        t = np.linspace(0, T*N, N)
-        plt.subplot(2,1,1)
-        plt.title('s{}'.format(i+1))
-        plt.plot(t, s_i)
-
-        plt.subplot(2,1,2)
-        plt.title('FFT')
-        plt.xlabel('Frequency')
-        plt.plot(freqs, 1.0 / N * spectrum)
-
-        max_percentages.append(percentage)
-        max_freqs.append(maxFreq)
+        percentages[i] = (maxPower + firstHarmonicPower) / total_power
 
     # Calculate BPM from the most periodic signal
-    idx = np.argmax(max_percentages)
-    selected_signal = s[:, idx]
-    peaks, _ = signal.find_peaks(selected_signal, height=0)
-    plt.figure()
-    plt.plot(selected_signal)
-    plt.plot(peaks, selected_signal[peaks], "o")
+    most_periodic_signal = np.argmax(percentages)
+    selected_signal = s[:, most_periodic_signal]
 
-    bpm = 60 * max_freqs[idx]
+    f, Pxx_spec = signal.periodogram(selected_signal, fs, 'flattop', scaling='spectrum')
+
+    [minVal, maxVal, minLoc, maxLoc] = cv2.minMaxLoc(Pxx_spec)
+
+    fpulse = f[maxLoc[1]]
+    bpm = 60.0 * fpulse
 
     return bpm
 
@@ -253,6 +231,7 @@ if __name__ == '__main__':
         print("Error opening video stream or file")
 
     # Track face until video is completed
+    print('Analyzing video...')
     isFirstFrame = True
     while cap.isOpened():
         # Capture frame-by-frame
