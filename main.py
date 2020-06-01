@@ -2,16 +2,17 @@
 Detecting Pulse from Head Motions in Video
 
 This is a pipeline for detecting average pulse rate from video
-based on the paper by Balakrishna et al.
+based on the paper by Balakrishnan et al.
 """
 
 import sys
 import cv2
 import numpy as np
-import scipy.signal as signal
 import matplotlib.pyplot as plt
-from scipy.interpolate import interp1d
+import scipy.signal as signal
 import scipy.stats
+from scipy.fftpack import fft, fftfreq
+from scipy.interpolate import interp1d
 from sklearn.decomposition import PCA
 
 # Haar cascade face classifier
@@ -64,10 +65,7 @@ def getProcessRegion(frame):
         dw = ww
         dh = int(hh*0.20)
 
-    #cv2.rectangle(frame, (xx,yy), (xx+ww, yy+hh), (255,0,0))
-    #cv2.imshow('Box', frame)
-
-    return (yy, ux,uy,uw,uh, ex,ey,ew,eh, dx,dy,dw,dh)
+    return (ux,uy,uw,uh, ex,ey,ew,eh, dx,dy,dw,dh)
 
 
 def opticalFlow(old_gray, current_frame, p0):
@@ -97,19 +95,19 @@ def opticalFlow(old_gray, current_frame, p0):
     return (p0, old_gray, good_old, good_new)
 
 
-def cubicSplineInterpolation(src):
+def cubicSplineInterpolation(x):
     """
     Performs cubic spline interpolation on an input time series to increase
     the sampling rate to that of an ECG device.
     """
     outFr = 250  # Desired output resolution = 250 Hz
     inFr = 30    # The videos were captured at a frame rate of 30 Hz
-    fr = int(outFr/inFr)
+    fr = outFr/inFr
 
-    t = np.linspace(0, len(src)-1, num=len(src))
-    f = interp1d(t, src, kind='cubic')
+    t = np.linspace(0, len(x)-1, num=len(x))
+    f = interp1d(t, x, kind='cubic')
 
-    t_new = np.linspace(0, len(src)-1, num=fr*len(src))
+    t_new = np.linspace(0, len(x)-1, num=round(fr*len(x)))
     resized = f(t_new)
 
     return resized
@@ -136,10 +134,10 @@ def temporalFilter(x):
     and changes in posture and retains higher frequency movements
     like pulse and harmonics.
     """
-    fs = 240
+    fs = 250
     nyq = 0.5 * fs
-    f_low = 0.75
-    f_high = 5
+    f_low = 0.8
+    f_high = 3
     f_low_dig = f_low/nyq
     f_high_dig = f_high/nyq
 
@@ -171,9 +169,6 @@ def PCA_compute(data):
     # Project the tracked point movements on to the principle component vectors
     projected = pca.transform(temp)
 
-    #mean, eigenvectors = cv2.PCACompute(temp_with_abnormalities_removed, mean=None)
-    #s = np.dot(temp, eigenvectors)
-
     return projected
 
 
@@ -184,87 +179,60 @@ def signal_selection(s):
     percentage of total spectral power accounted for by the frequency
     with maximal power and its first harmonic.
     """
-    fs = 240
-    percentages = np.zeros(5)
+    fs = 250
+
+    max_percentages = []
+    max_freqs = []
 
     # Only the first 5 source signals are analyzed per the paper
     for i in range(5):
         s_i = s[:, i]
+        N = len(s_i)
+        T = 1.0 / fs
 
-        fourier_transform = np.fft.rfft(s_i)
-        power_spectrum = np.square(np.abs(fourier_transform))
-        freqs = np.fft.rfftfreq(len(s_i), d=1./fs)
+        # Compute the power spectrum of the source signal
+        spectrum = np.abs(fft(s_i))
+        spectrum *= spectrum
+        freqs = fftfreq(N, T)
 
-        total_power = np.sum(power_spectrum)
-        maxInd = np.argmax(power_spectrum)
-        maxFreq = freqs[maxInd]
+        # Get frequency with max power and its first harmonic
+        maxInd = np.argmax(spectrum)
+        maxPower = spectrum[maxInd]
+        maxFreq = np.abs(freqs[maxInd])
         firstHarmonic = 2*maxFreq
         firstHarmonicInd = np.where(freqs == firstHarmonic)
+        firstHarmonicPower = spectrum[firstHarmonicInd]
 
-        percentages[i] = (power_spectrum[maxInd] + power_spectrum[firstHarmonicInd]) / total_power
-    print(percentages)
-    maxPercentInd = np.argmax(percentages)
-    selected_signal = s[:, maxPercentInd]
+        # Calculate percentage of total power the max frequency accounts for
+        total_power = np.sum(spectrum)
+        percentage = (maxPower + firstHarmonicPower) / total_power
 
-    selected_fourier_transform = np.fft.rfft(selected_signal)
-    selected_power_spectrum = np.square(np.abs(selected_fourier_transform))
-    selected_freqs = np.fft.rfftfreq(len(selected_signal), d=1./fs)
+        # Plot signal along with its DFT
+        plt.figure()
+        t = np.linspace(0, T*N, N)
+        plt.subplot(2,1,1)
+        plt.title('s{}'.format(i+1))
+        plt.plot(t, s_i)
 
-    plt.figure(5)
-    plt.title('Selected Signal (s{}) Power Spectrum'.format(maxPercentInd + 1))
-    plt.ylabel('Power')
-    plt.xlabel('Frequency')
-    plt.plot(selected_freqs, selected_power_spectrum, 'b')
+        plt.subplot(2,1,2)
+        plt.title('FFT')
+        plt.xlabel('Frequency')
+        plt.plot(freqs, 1.0 / N * spectrum)
 
-    selected_maxInd = np.argmax(selected_power_spectrum)
-    fpulse = selected_freqs[selected_maxInd]
-    bpm = 60 / fpulse
+        max_percentages.append(percentage)
+        max_freqs.append(maxFreq)
+
+    # Calculate BPM from the most periodic signal
+    idx = np.argmax(max_percentages)
+    selected_signal = s[:, idx]
+    peaks, _ = signal.find_peaks(selected_signal, height=0)
+    plt.figure()
+    plt.plot(selected_signal)
+    plt.plot(peaks, selected_signal[peaks], "x")
+
+    bpm = 60 * max_freqs[idx]
 
     return bpm
-
-    """fs = 240
-
-    # Only the first 5 signals are analyzed per the paper
-    percentages = np.zeros(5)
-    for i in range(5):
-        s_i = s[:, i]
-        #f, Pxx_spec = signal.welch(s_i, fs, 'flattop', 1024, scaling='spectrum')
-        f, Pxx_spec = signal.periodogram(s_i, fs, 'flattop', scaling='spectrum')
-        total_power = np.sum(Pxx_spec)
-
-        [minPower, maxPower, minLoc, maxLoc] = cv2.minMaxLoc(Pxx_spec)
-        freqMaxPower = f[maxLoc[1]]
-        firstHarmonic = 2*freqMaxPower
-
-        firstHarmonicLoc = np.where(f == firstHarmonic)
-        firstHarmonicPower = Pxx_spec[firstHarmonicLoc]
-
-        percentages[i] = (maxPower + firstHarmonicPower)/total_power
-
-    print(percentages)
-    most_periodic_signal = np.argmax(percentages)
-    selected_signal = s[:, most_periodic_signal]
-    #selected_signal = selected_signal - np.mean(selected_signal)  # Remove DC component
-
-    #f, Pxx_spec = signal.welch(selected_signal, fs, 'flattop', 1024, scaling='spectrum')
-    f, Pxx_spec = signal.periodogram(selected_signal, fs, 'flattop', scaling='spectrum')
-
-    [minVal, maxVal, minLoc, maxLoc] = cv2.minMaxLoc(Pxx_spec)
-
-    #print(maxVal)
-    #print(maxLoc)
-    #print(f[maxLoc[1]])
-
-    plt.figure(5)
-    plt.title('Selected Signal (s{}) Power Spectrum'.format(most_periodic_signal+1))
-    plt.semilogy(f, np.sqrt(Pxx_spec))
-    plt.xlabel('Frequency [Hz]')
-    plt.ylabel('Linear spectrum [V RMS]')
-
-    fpulse = f[maxLoc[1]]
-    bpm = 60/fpulse
-
-    return bpm"""
 
 
 ##########
@@ -296,7 +264,7 @@ if __name__ == '__main__':
 
         if isFirstFrame:
             # On the first frame, get the face region
-            yy, ux,uy,uw,uh, ex,ey,ew,eh, dx,dy,dw,dh = getProcessRegion(frame)
+            ux,uy,uw,uh, ex,ey,ew,eh, dx,dy,dw,dh = getProcessRegion(frame)
 
             # Create a mask for the regions of interest (forehead and mouth)
             old_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -339,44 +307,36 @@ if __name__ == '__main__':
     # Delete first dummy column from data
     data = data[:, 1:]
 
-    # Normalize?
-    #r, c = data.shape
-    #for time_series in range(r):
-    #    data[time_series, :] = data[time_series, :] - yy
-
     # Remove erratic points
-    """print(data.shape)
-    stable_data = stable_features(data)
-    print(stable_data.shape)"""
-    stable_data = data
+    # data = stable_features(data)
 
     # Plot the original time series of a point
-    r, c = stable_data.shape
+    r, c = data.shape
     t = np.linspace(0, c-1, num=c)
     plt.figure(1)
     plt.title('Original Time Series of a Point')
-    plt.ylabel('Position')
+    plt.ylabel('Y-Position')
     plt.xlabel('Time')
-    plt.plot(t, stable_data[0, :], 'b')
+    plt.plot(t, data[0, :], 'b')
 
     # Signal processing
-    num_row, num_col = stable_data.shape
+    num_row, num_col = data.shape
     outFr = 250
     inFr = 30
-    fr = int(outFr/inFr)
-    interpolated_data = np.zeros((num_feature_points, num_col*fr))
-    filtered_data = np.zeros((num_feature_points, num_col*fr))
+    fr = outFr/inFr
+    interpolated_data = np.zeros((num_feature_points, round(num_col*fr)))
+    filtered_data = np.zeros((num_feature_points, round(num_col*fr)))
 
     for time_series in range(num_row):
         # Increase the sampling frequency of the data using cubic spline interpolation
-        interpolated_data[time_series, :] = cubicSplineInterpolation(stable_data[time_series, :])
+        interpolated_data[time_series, :] = cubicSplineInterpolation(data[time_series, :])
 
-    # Plot interpolated and filtered data
+    # Plot interpolated time series of the point
     r, c = interpolated_data.shape
-    t = np.linspace(0, c - 1, num=c)
+    t = np.linspace(0, c-1, num=c)
     plt.figure(2)
     plt.title('Interpolated Time Series')
-    plt.ylabel('Position')
+    plt.ylabel('Y-Position')
     plt.xlabel('Time')
     plt.plot(t, interpolated_data[0, :], 'b')
 
@@ -388,30 +348,8 @@ if __name__ == '__main__':
     plt.title('Interpolated Data Passed Through Filter')
     plt.plot(t, filtered_data[0, :], 'b')
 
-    """for time_series in range(num_row):
-        # Increase the sampling frequency of the data using cubic spline interpolation
-        interpolated_data[time_series, :] = cubicSplineInterpolation(data[time_series, :])
-
-    print(interpolated_data.shape)
-    stable_data = stable_features(interpolated_data)
-    print(stable_data.shape)
-
-    num_row, num_col = stable_data.shape
-    filtered_data = np.zeros((num_row, num_col))
-    for time_series in range(num_row):
-        # Filter out the low frequency movement with Butterworth bandpass filter
-        filtered_data[time_series, :] = temporalFilter(stable_data[time_series, :])"""
-
-
     # Compute PCA projection
     s = PCA_compute(filtered_data)
-
-    # Plot first component signal
-    r, c = s.shape
-    t = np.linspace(0, r-1, num=r)
-    plt.figure(4)
-    plt.title('s1')
-    plt.plot(t, s[:, 0], 'b')
 
     # Calculate the heart rate in BPM
     bpm = signal_selection(s)
