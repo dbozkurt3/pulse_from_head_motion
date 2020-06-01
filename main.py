@@ -228,7 +228,7 @@ def signal_selection(s):
     peaks, _ = signal.find_peaks(selected_signal, height=0)
     plt.figure()
     plt.plot(selected_signal)
-    plt.plot(peaks, selected_signal[peaks], "x")
+    plt.plot(peaks, selected_signal[peaks], "o")
 
     bpm = 60 * max_freqs[idx]
 

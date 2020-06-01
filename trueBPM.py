@@ -1,3 +1,7 @@
+"""
+Gets the ground truth BPM from an ECG file
+"""
+
 import sys
 import numpy as np
 import heartpy as hp
